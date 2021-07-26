@@ -1,67 +1,56 @@
-// Copyright 2017, Ralf Ebert
-// License   https://opensource.org/licenses/MIT
-// Source    https://www.ralfebert.de/snippets/ios/urlsession-background-downloads/
+import os
+import SwiftUI
 
-import Foundation
-
-class DownloadManager : NSObject, URLSessionDelegate, URLSessionDownloadDelegate {
-
+class DownloadManager: NSObject, ObservableObject {
     static var shared = DownloadManager()
 
-    typealias ProgressHandler = (Float) -> ()
-
-    var onProgress : ProgressHandler? {
-        didSet {
-            if onProgress != nil {
-                let _ = activate()
-            }
-        }
-    }
+    private var urlSession: URLSession!
+    @Published var tasks: [URLSessionTask] = []
 
     override private init() {
         super.init()
-    }
 
-    func activate() -> URLSession {
         let config = URLSessionConfiguration.background(withIdentifier: "\(Bundle.main.bundleIdentifier!).background")
 
-        // Warning: If an URLSession still exists from a previous download, it doesn't create a new URLSession object but returns the existing one with the old delegate object attached!
-        return URLSession(configuration: config, delegate: self, delegateQueue: OperationQueue())
+        // Warning: Make sure that the URLSession is created only once (if an URLSession still
+        // exists from a previous download, it doesn't create a new URLSession object but returns
+        // the existing one with the old delegate object attached)
+
+        urlSession = URLSession(configuration: config, delegate: self, delegateQueue: OperationQueue())
+
+        updateTasks()
     }
 
-    private func calculateProgress(session : URLSession, completionHandler : @escaping (Float) -> ()) {
-        session.getTasksWithCompletionHandler { (tasks, uploads, downloads) in
-            let progress = downloads.map({ (task) -> Float in
-                if task.countOfBytesExpectedToReceive > 0 {
-                    return Float(task.countOfBytesReceived) / Float(task.countOfBytesExpectedToReceive)
-                } else {
-                    return 0.0
-                }
-            })
-            completionHandler(progress.reduce(0.0, +))
-        }
+    func startDownload(url: URL) {
+        let task = urlSession.downloadTask(with: url)
+        task.resume()
+        tasks.append(task)
     }
 
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
-
-        if totalBytesExpectedToWrite > 0 {
-            if let onProgress = onProgress {
-                calculateProgress(session: session, completionHandler: onProgress)
+    private func updateTasks() {
+        urlSession.getAllTasks { tasks in
+            DispatchQueue.main.async {
+                self.tasks = tasks
             }
-            let progress = Float(totalBytesWritten) / Float(totalBytesExpectedToWrite)
-            debugPrint("Progress \(downloadTask) \(progress)")
-
         }
     }
-
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-        debugPrint("Download finished: \(location)")
-        try? FileManager.default.removeItem(at: location)
-    }
-
-    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        debugPrint("Task completed: \(task), error: \(error)")
-    }
-    
 }
 
+extension DownloadManager: URLSessionDelegate, URLSessionDownloadDelegate {
+    func urlSession(_: URLSession, downloadTask: URLSessionDownloadTask, didWriteData _: Int64, totalBytesWritten _: Int64, totalBytesExpectedToWrite _: Int64) {
+        os_log("Progress %f for %@", type: .debug, downloadTask.progress.fractionCompleted, downloadTask)
+    }
+
+    func urlSession(_: URLSession, downloadTask _: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        os_log("Download finished: %@", type: .info, location.absoluteString)
+        // The file at location is temporary and will be gone afterwards
+    }
+
+    func urlSession(_: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error = error {
+            os_log("Download error: %@", type: .error, String(describing: error))
+        } else {
+            os_log("Task finished: %@", type: .info, task)
+        }
+    }
+}
